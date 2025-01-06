@@ -93,21 +93,88 @@ class DeepLabLikeMultiStreamDict(pl.LightningModule):
         # Load the new state_dict into classifier_single
         self.classifier_single.load_state_dict(new_state_dict)
         
-    def forward(self, x:List[Tensor], input_type:int = 0) -> Tensor:
+    def forward(self, x:List[Tensor], input_type:int = -1) -> Tensor:
 
+        # If no input type assigned, indicates training data
+        # Should randomly assign both (50%), L-band-only (25%), or C-band only (25%) 
+        if input_type == -1:
+            # Generate random number between 0 and 1
+            rand_num = torch.rand(1).item()
+
+            if rand_num < 0.5:
+                input_type = 0
+            elif rand_num < 0.75:
+                input_type = 1
+            else:
+                input_type = 2
         
         input_shape = x[0].shape[-2:]
-        
-        if input_type == 0:
-            features = [stream(x[i])['out'] for i, stream in enumerate(self.streams)]
-            features = torch.cat(features, dim=1)
-            y_hat = self.classifier_double(features)
-        else:
-            if input_type == 1:
-                features = self.streams[0](x[0])['out']
+
+        # if self.training:
+        #     if input_type == 0:  # Use both inputs
+        #         for param in self.streams[0].parameters():
+        #             param.requires_grad = True
+        #         for param in self.streams[1].parameters():
+        #             param.requires_grad = True
+        #         features = [stream(x[i])['out'] for i, stream in enumerate(self.streams)]
+        #         features = torch.cat(features, dim=1)
+        #     else:
+        #         zeros_tensor = torch.zeros_like(x[0])
+        #         if input_type == 1:  # L-band only
+        #             for param in self.streams[0].parameters():
+        #                 param.requires_grad = True
+        #             for param in self.streams[1].parameters():
+        #                 param.requires_grad = False
+        #             features = [self.streams[0](x[0])['out'], self.streams[1](zeros_tensor)['out']]
+        #             features = torch.cat(features, dim=1)
+        #         else:  # C-band only
+        #             for param in self.streams[0].parameters():
+        #                 param.requires_grad = False
+        #             for param in self.streams[1].parameters():
+        #                 param.requires_grad = True
+        #             features = [self.streams[0](zeros_tensor)['out'], self.streams[1](x[0])['out']]
+        #             features = torch.cat(features, dim=1)
+        #     y_hat = self.classifier_double(features)
+
+        # Zero tensor applied only after the backbone
+        if self.training:
+            if input_type == 0:  # Use both inputs
+                for param in self.streams[0].parameters():
+                    param.requires_grad = True
+                for param in self.streams[1].parameters():
+                    param.requires_grad = True
+                features = [stream(x[i])['out'] for i, stream in enumerate(self.streams)]
+                features = torch.cat(features, dim=1)
             else:
-                features = self.streams[1](x[0])['out']
-            y_hat = self.classifier_single(features)
+                if input_type == 1:  # L-band only
+                    for param in self.streams[0].parameters():
+                        param.requires_grad = True
+                    for param in self.streams[1].parameters():
+                        param.requires_grad = False
+                    features = self.streams[0](x[0])['out']
+                    zeros_tensor = torch.zeros_like(features)
+                    features = torch.cat([features, zeros_tensor], dim=1)
+                else:  # C-band only
+                    for param in self.streams[0].parameters():
+                        param.requires_grad = False
+                    for param in self.streams[1].parameters():
+                        param.requires_grad = True
+                    features = self.streams[1](x[0])['out']
+                    zeros_tensor = torch.zeros_like(features)
+                    features = torch.cat([zeros_tensor, features], dim=1)
+            y_hat = self.classifier_double(features)
+
+        else:
+            if input_type == 0:
+                features = [stream(x[i])['out'] for i, stream in enumerate(self.streams)]
+                features = torch.cat(features, dim=1)
+                y_hat = self.classifier_double(features)
+            else:
+                if input_type == 1:
+                    features = self.streams[0](x[0])['out']
+                else:
+                    features = self.streams[1](x[0])['out']
+                y_hat = self.classifier_single(features)
 
         y_hat = F.interpolate(y_hat, size=input_shape, mode="bilinear", align_corners=False)
         

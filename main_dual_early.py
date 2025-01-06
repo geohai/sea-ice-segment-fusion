@@ -52,8 +52,8 @@ def main(config):
     else:
         class_weights = None
 
-    mean = [float(val) for val in config['datamodule']['mean'].split(',')]
-    std = [float(val) for val in config['datamodule']['std'].split(',')]
+    mean_all = [float(val) for val in config['datamodule']['mean'].split(',')]
+    std_all = [float(val) for val in config['datamodule']['std'].split(',')]
 
     min_epochs = int(config['train']['min_epochs'])
     max_epochs = int(config['train']['max_epochs'])
@@ -67,14 +67,24 @@ def main(config):
     ignore_index = int(config['train']['ignore_index'])
 
     transforms = None
-    norms = {}
-    norms['input-1'] = Normalize(mean, std)
-    norms['input-2'] = Normalize(mean, std)
 
     pl.seed_everything(seed, workers=True)
 
     #########################################################
     for dir_idx, dir_out in enumerate(dir_outs):
+        mean = [mean_all[dir_idx*4], mean_all[dir_idx*4+1], mean_all[dir_idx*4+2], mean_all[dir_idx*4+3]]
+        std = [std_all[dir_idx*4], std_all[dir_idx*4+1], std_all[dir_idx*4+2], std_all[dir_idx*4+3]]
+
+        # Split for L-band and C-band
+        mean_1 = [mean[0], mean[1]]
+        mean_2 = [mean[2], mean[3]]
+        std_1 = [std[0], std[1]]
+        std_2 = [std[2], std[3]]
+        
+        norms = {}
+        norms['input-1'] = Normalize(mean_1, std_1)
+        norms['input-2'] = Normalize(mean_2, std_2)
+        
         fname_csv = fname_csvs[dir_idx]
         df = pd.read_csv(fname_csv)
 

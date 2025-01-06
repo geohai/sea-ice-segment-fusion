@@ -31,14 +31,17 @@ def evaluate(config):
     else:
         test_label_rasters_sec = ['None' for _ in test_label_rasters_all]
 
-    mean = [float(val) for val in config['datamodule']['mean'].split(',')]
-    std = [float(val) for val in config['datamodule']['std'].split(',')]
+    mean_all = [float(val) for val in config['datamodule']['mean'].split(',')]
+    std_all = [float(val) for val in config['datamodule']['std'].split(',')]
     ignore_index = int(config['datamodule']['ignore_index'])
 
-    norms = {}
-    norms['input'] = Normalize(mean, std)
-
     for idx, dir_out in enumerate(dir_outs):
+        mean = [mean_all[idx*2], mean_all[idx*2+1]]
+        std = [std_all[idx*2], std_all[idx*2+1]]
+
+        norms = {}
+        norms['input'] = Normalize(mean, std)
+        
         model_path = model_paths[idx]
         
         # Assuming each test split only has two scenes

@@ -43,8 +43,8 @@ def main(config):
     else:
         class_weights = None
 
-    mean = [float(val) for val in config['datamodule']['mean'].split(',')]
-    std = [float(val) for val in config['datamodule']['std'].split(',')]
+    mean_all = [float(val) for val in config['datamodule']['mean'].split(',')]
+    std_all = [float(val) for val in config['datamodule']['std'].split(',')]
 
     min_epochs = int(config['train']['min_epochs'])
     max_epochs = int(config['train']['max_epochs'])
@@ -58,8 +58,6 @@ def main(config):
     ignore_index = int(config['train']['ignore_index'])
 
     transforms = None
-    norms = {}
-    norms['input'] = Normalize(mean, std)
 
     pl.seed_everything(seed, workers=True)
 
@@ -67,6 +65,12 @@ def main(config):
     for idx, dir_out in enumerate(dir_outs):
         fname_csv = fname_csvs[idx]
         df = pd.read_csv(fname_csv)
+
+        mean = [mean_all[idx*2], mean_all[idx*2+1]]
+        std = [std_all[idx*2], std_all[idx*2+1]]
+
+        norms = {}
+        norms['input'] = Normalize(mean, std)
 
         # Windows need different distributed backend
         # this will be depecrated in pytorch lightning in version 1.8
