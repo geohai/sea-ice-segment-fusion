@@ -1,97 +1,234 @@
-# Sea ice segmentaion using convolutional neural networks
+# Sea Ice Segmentation Fusion
 
-This repository contains scripts that can be used to train convolutional neural network models to segment sea ice using Synthetic Aperture Radar (SAR) images like the following example. 
+Train and evaluate sea ice type segmentation models using ALOS-2 L-band and
+Sentinel-1 C-band SAR imagery. Experiments are selected by an INI file. The
+repository contains one training entry point (`main.py`), one evaluation entry
+point (`evaluate.py`), and one model module (`models.py`).
 
-![Results example](./resources/figure-5-binary-jul-pred.png)
+## Installation
 
-The models are trained with  three-band rasters as input (a), and labels (rasters) with the same projection and dimensions than the input (b). After training, the model generates outputs (c) using full SAR scenes (a) that can be evaluated agains the original labels (d)
-
-# Getting started
-## Using a terminal
-Clone this repository to your local machine using your tool of choice. Open the [Anaconda Prompt](https://docs.anaconda.com/anaconda/user-guide/getting-started/) (requires a working [Anaconda](https://www.anaconda.com/) installation):
-
-Then, use the prompt to **navigate to the location of the cloned repository**. Install the [environment](env_exported.yml) using the command:  
-`conda env create -f env_exported.yml`
-
-Follow the instructions to activate the new environment:  
-`conda activate sea-ice-segment`
-
-We have two environment files: 
-- [env_exported](env_exported.yml): the environment exported from  Anaconda's history. This should be enough to replicate the results.
-- [env_full](env_full.yml): the full environment installed. This includes more information and might be OS dependent. The experiments were executed using Windows 10 Pro for Workstations, mostly using version 21H2. 
-
-## Data and models
-We developed the scripts in this repository using the [Extreme Earth](https://doi.org/10.5281/zenodo.4683174) dataset that provides labels (vector polygons) for the interpretation of sea ice conditions on the East coast of Greenland based on twelve Sentinel-1 images. We use [GDAL](https://gdal.org/) to rasterize the labels ([`rasterize.py`](./utils/rasterize.py)). The [dataloaders](datasets.py) are based in [Xarray](https://docs.xarray.dev/en/stable/) and [rioxarray](https://corteva.github.io/rioxarray/stable/).  
-
-Models were developed using [PyTorch](https://pytorch.org/) and trained using [PyTorch Lighnting](https://www.pytorchlightning.ai/).
-
-## Using the code
-Use [`main.py`](main.py) to train the models according to a configuration file (several examples in [configs](./configs/)). Evaluate the models using  [`evaluate.py`](evaluate.py) that also requires [configuration files](./configs/).
-
-One of the arguments in the configuration for [`main.py`](main.py) is `fname_csv` that is the file name for a csv files containing raster identification such as the example in csv [example](./resources/EE_IO-poly_type-all.csv)
-
-## References
-Please cite us!
-
-The code in this repository was the main source for a sudy published as a [peer-reviewed paper](https://www.tandfonline.com/doi/citedby/10.1080/01431161.2023.2248560) titled **Enhancing sea ice segmentation in Sentinel-1 images with atrous convolutions**. The [preprint](https://arxiv.org/abs/2310.17122) is also available. The bibtex entry for the paper is below:
-
-```bibtex
-@ARTICLE{enhancing_sea_ice_2023,
-    author = {Pires de Lima, and Vahedi, Behzad and Hughes, Nick and Barrett, Andrew P. and Meier, Walter and Karimzadeh, Morteza},
-    title = {Enhancing sea ice segmentation in Sentinel-1 images with atrous convolutions},
-    journal = {International Journal of Remote Sensing},
-    volume = {44},
-    number = {17},
-    pages = {5344-5374},
-    year = {2023},
-    publisher = {Taylor & Francis},
-    doi = {10.1080/01431161.2023.2248560},
-}
+```bash
+conda env create -f env.yml
+conda activate sea-ice-segment-fusion
+python -m pytest -q tests
 ```
 
-Atrous convolution was only part of a series of published studies on machine learning for sea ice. Code in [https://github.com/geohai/sea-ice-binary-ai4seaice/tree/main](https://github.com/geohai/sea-ice-binary-ai4seaice/tree/main) might also be of interest. Other than uncertainty analysis, we talked about:
+Alternatively, install Python dependencies with `pip install -r requirements.txt`.
 
-* [Model Ensemble With Dropout for Uncertainty Estimation in Sea Ice Segmentation Using Sentinel-1 SAR](https://ieeexplore.ieee.org/abstract/document/10312772) ([preprint](https://eartharxiv.org/repository/view/6568/))
-* [Comparison of Cross-Entropy, Dice, and Focal Loss for Sea Ice Type Segmentation](https://ieeexplore.ieee.org/abstract/document/10282060) ([preprint](https://arxiv.org/abs/2310.17135))
-* [Deep Learning on SAR Imagery: Transfer Learning Versus Randomly Initialized Weights](https://ieeexplore.ieee.org/abstract/document/10281892) ([preprint](https://arxiv.org/abs/2310.17126))
+On macOS, installing geospatial dependencies through conda-forge may help:
 
-The `bibtex` entry for the publications above is listed below:
-
-
-```bibtex
-@ARTICLE{sea_ice_unc_2023,
-  author={Pires de Lima, Rafael and Karimzadeh, Morteza},
-  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
-  title={Model Ensemble With Dropout for Uncertainty Estimation in Sea Ice Segmentation Using Sentinel-1 SAR}, 
-  year={2023},
-  volume={61},
-  number={},
-  pages={1-15},
-  doi={10.1109/TGRS.2023.3331276}
-}
+```bash
+conda install -c conda-forge rasterio rioxarray
 ```
 
-```bibtex
-@INPROCEEDINGS{comparison_sea_ice_2023,
-  author={Pires de Lima, Rafael and Vahedi, Behzad and Karimzadeh, Morteza},
-  booktitle={IGARSS 2023 - 2023 IEEE International Geoscience and Remote Sensing Symposium}, 
-  title={Comparison of Cross-Entropy, Dice, and Focal Loss for Sea Ice Type Segmentation}, 
-  year={2023},
-  pages={145-148},
-  address = {Pasadena, CA, USA}
-  doi={10.1109/IGARSS52108.2023.10282060}
-}
+The Belgica Bank raster images, rasterized labels, and train/validation CSV
+files must be supplied separately.
+
+## Data and output directories
+
+Set environment variables to locate data and write results:
+
+```bash
+export OUTPUT_ROOT="results"
+export DATASET_ROOT="/Users/jenmacdonald/Documents/datasets/Belgica_Bank"
 ```
 
-```bibtex
-@INPROCEEDINGS{tl_sea_ice_2023,
-  author={Karimzadeh, Morteza and Pires de Lima, Rafael},
-  booktitle={IGARSS 2023 - 2023 IEEE International Geoscience and Remote Sensing Symposium}, 
-  title={Deep Learning on SAR Imagery: Transfer Learning Versus Randomly Initialized Weights}, 
-  year={2023},
-  pages={1983-1986},
-  address = {Pasadena, CA, USA}
-  doi={10.1109/IGARSS52108.2023.10281892}
-}
+Relative root values are resolved relative to the repository directory. In the
+INI files, `[paths]` defines fallback directories when the environment
+variables are not set:
+
+```ini
+[paths]
+default_dataset_root = D:/jema2085/data/Belgica_Bank
+default_output_root = D:/jema2085/data/Belgica_Bank/results
 ```
 
+Path resolution examples when the environment variables above are set:
+
+| Configured path | Resolved path |
+|---|---|
+| `results/SA/alos2-jan` | `./results/SA/alos2-jan` |
+| `results/BB_IO-SA-alos2-jan.csv` | `$DATASET_ROOT/BB_IO-SA-alos2-jan.csv` |
+| `denoised_resampled/example.tif` | `$DATASET_ROOT/denoised_resampled/example.tif` |
+| `labels_rasterized/SA/example.tif` | `$DATASET_ROOT/labels_rasterized/SA/example.tif` |
+
+For `run_dirs` and `csv_files`, the portion after `results/` is appended to
+the corresponding root. CSVs must be placed directly under `DATASET_ROOT`.
+SAR and label raster paths are resolved under `DATASET_ROOT`; absolute paths
+in CSVs that begin with the configured dataset directory are relocated there.
+
+On Windows PowerShell, environment variables may be set for the terminal
+session as follows:
+
+```powershell
+$env:OUTPUT_ROOT = "D:/my-experiment-results"
+$env:DATASET_ROOT = "D:/my-datasets/Belgica_Bank"
+```
+
+On macOS and Linux, both environment variables must be set when the configured
+fallback directories refer to a Windows drive.
+
+## Experiment configurations
+
+There are 16 INI files: one training/evaluation pair for each experiment.
+
+| Experiment | Training INI | Evaluation INI |
+|---|---|---|
+| L-band only | `configs/SA_single_alos.ini` | `configs/eval_SA_single_alos2.ini` |
+| C-band only | `configs/SA_single_s1.ini` | `configs/eval_SA_single_s1.ini` |
+| Early fusion | `configs/SA_early.ini` | `configs/eval_SA_early.ini` |
+| Late fusion | `configs/SA_late.ini` | `configs/eval_SA_late.ini` |
+| Late fusion (L + L) | `configs/SA_late_alos2_alos2.ini` | `configs/eval_SA_late_alos2_alos2.ini` |
+| Late fusion (C + C) | `configs/SA_late_s1_s1.ini` | `configs/eval_SA_late_s1_s1.ini` |
+| Gated, L-band target | `configs/SA_gated_alos2.ini` | `configs/eval_SA_gated_alos2.ini` |
+| Gated, C-band target | `configs/SA_gated_s1.ini` | `configs/eval_SA_gated_s1.ini` |
+
+The late-fusion L+L and C+C controls use the same two independently trained
+encoders and concatenation decoder as L+C late fusion, with identical trainable
+parameter counts. Each encoder receives the same source band for its control.
+Both controls use the paired-scene training CSVs, so the training and test
+scenes and labels remain the same as for L+C; the unused SAR source is not
+fed into the model. Each encoder's input is normalized with the selected
+source's fold statistics. Their runs, checkpoints, and evaluation summaries
+are stored separately from the L+C experiment.
+
+Run the extra controls with:
+
+```bash
+python main.py --config-file configs/SA_late_alos2_alos2.ini --seed 0
+python evaluate.py --config-file configs/eval_SA_late_alos2_alos2.ini --seed 0
+python main.py --config-file configs/SA_late_s1_s1.ini --seed 0
+python evaluate.py --config-file configs/eval_SA_late_s1_s1.ini --seed 0
+```
+
+The `[experiment]` and `[model]` sections define the model and sensor behavior.
+For gated models, `gated_target_band` selects the sensor used for validation
+and target-only inference, and `gated_switch_epoch` selects the transition to
+target-only training. The `[eval]` section specifies the evaluated sensor.
+
+## Training and evaluation
+
+Development run (one epoch, one fold, one sample per scene, batch size one,
+CPU by default):
+
+```bash
+python main.py --config-file configs/SA_late.ini --dev
+python evaluate.py --config-file configs/eval_SA_late.ini --dev
+```
+
+Full run (five folds and two test scenes per fold):
+
+```bash
+python main.py --config-file configs/SA_late.ini --seed 0
+python evaluate.py --config-file configs/eval_SA_late.ini --seed 0
+```
+
+### Class-weighted cross-entropy
+
+By default, training uses **standard cross-entropy** (CE). Pass `--class-weighted`
+for class-weighted CE. Per-fold weights are computed using **training labels only**:
+weights are inverse-square-root class frequencies, normalized to an average of
+1 over classes present in training, and capped at 10. Classes absent from the
+training split receive weight 0. The labels marked with `ignore_index` do not
+contribute. No other loss functions or class-aware sampling strategies are
+available. Training and validation use the selected CE loss for `val_loss` and
+early stopping.
+
+```bash
+python main.py --config-file configs/SA_late.ini --seed 0 --class-weighted
+python evaluate.py --config-file configs/eval_SA_late.ini --seed 0 --class-weighted
+```
+
+Use the flag on **both** commands for weighted runs. Standard CE and weighted
+CE save to separate directories (`seed_0/` and `seed_0/class_weighted/`). Aggregate F1 summaries are also
+separated by this directory suffix. The
+training manifest and checkpoint record the selected objective and exact weights;
+evaluation rejects mismatches. Other settings and the training patch sampler
+are unchanged.
+
+`--config-file` is required and may be a path or a filename in `configs/`.
+Both entry points accept `--seed` (default `0`), `--dev`, `--class-weighted`, and
+`--device` (`auto`, `cpu`, `cuda`, or `mps`). In development mode, model
+pretraining downloads are disabled. In full mode, model pretraining follows
+the selected INI. Training settings such as crop length, epoch limits, batch
+size, and sample counts are controlled by the INI.
+
+### Gated fusion ablations
+
+Gated models support `--ablation` with `none` (default), `no-curriculum`, and
+`no-gate-centering`. The standard gate applies a fixed centering adjustment:
+
+```text
+g_adjusted = g - 0.5 * (g - 0.5)^2 * sign(g - 0.5)
+f_fused = g_adjusted * L + (1 - g_adjusted) * C
+```
+
+With the standard curriculum, both sensors contribute during the first 15
+epochs, followed by target-only training. In the `no-curriculum` ablation,
+both encoders contribute throughout training while validation still uses the
+target sensor. In the `no-gate-centering` ablation, the sigmoid gate is used
+directly.
+
+```bash
+# Standard gated L-band target
+python main.py --config-file configs/SA_gated_alos2.ini --seed 0
+python evaluate.py --config-file configs/eval_SA_gated_alos2.ini --seed 0
+
+# Gated L-band target without curriculum switching
+python main.py --config-file configs/SA_gated_alos2.ini --ablation no-curriculum --seed 0
+python evaluate.py --config-file configs/eval_SA_gated_alos2.ini --ablation no-curriculum --seed 0
+
+# Gated L-band target without gate-centering
+python main.py --config-file configs/SA_gated_alos2.ini --ablation no-gate-centering --seed 0
+python evaluate.py --config-file configs/eval_SA_gated_alos2.ini --ablation no-gate-centering --seed 0
+```
+
+Use the C-band gated configuration pair to run the same variants for the C-band
+target. Training and evaluation must use the same ablation value. Ablation
+artifacts are stored in separate folders to prevent checkpoint collisions.
+
+## Outputs and metrics
+
+Per-fold training outputs are stored under
+`OUTPUT_ROOT/SA/<configured-run-directory>/<dev|full>/seed_<seed>/`, including
+`model.pth`, a Lightning checkpoint, `run.json`, `train.cfg`, and training logs.
+Evaluation writes class rasters, probability rasters (if enabled), correctness
+rasters, per-scene metrics, and confusion matrices alongside the checkpoint.
+
+Evaluation also produces aggregate metrics at
+`OUTPUT_ROOT/SA/metrics/<experiment>/<dev|full>/seed_<seed>/evaluation_<sensor>/`:
+
+- `scene_f1.csv`: weighted, macro, and per-class F1 with ground-truth supports,
+  for every evaluated scene.
+- `scene_weighted_f1.csv`: per-scene weighted F1 scores.
+- `f1_summary.csv`: scene-level mean, sample standard deviation, number of
+  contributing scenes, and pixel-pooled F1.
+- `metrics_average.txt`: readable scene-level and pooled summary.
+- `confusion_matrix_average.pdf`: pooled confusion matrix visualization.
+
+A class that has no labeled pixels in a scene is reported as N/A for that
+scene; it is excluded from that scene's macro F1 and across-scene per-class
+mean. The summaries distinguish scene-level descriptive statistics from
+metrics pooled across all labeled pixels. A single seed does not provide an
+independent-seed confidence interval.
+
+Training and evaluation INIs contain identical per-fold normalization
+statistics. The evaluator also checks them against the saved `run.json`
+manifest before processing any scene. Raster inference operates on entire
+scenes in a single forward pass and can require substantial CPU/GPU memory.
+During training, invalid SAR pixels are replaced with each channel's
+patch-local mean before normalization.
+
+## Determinism
+
+Python, NumPy, PyTorch, and Lightning RNGs are seeded. Deterministic PyTorch
+algorithms and cuDNN settings are enabled, and CUDA TF32 is disabled. One RNG
+stream is maintained across the five-fold run. Exact numerical agreement
+across operating systems, GPU types, or library versions is not guaranteed.
+The manifest records the software environment and selected settings.
+
+## Utilities
+
+`utils/compute_mean_std.py` calculates band-wise means and standard deviations
+from raster paths listed in a CSV file. Its CLI options are documented with
+`python utils/compute_mean_std.py -h`.

@@ -1,85 +1,60 @@
+"""Standard and class-weighted cross-entropy for semantic segmentation."""
+
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from kornia import losses
+from torch import nn
+from torch.nn import functional as F
 
-class FocalLossMod(nn.Module):
-    
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean', ignore_index=-100):
-        super(FocalLossMod, self).__init__()
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = reduction
+
+class MaskedCrossEntropyLoss(nn.Module):
+    """Cross-entropy with optional weights and safe handling of unlabeled batches."""
+
+    def __init__(self, weight=None, ignore_index=4):
+        super().__init__()
         self.ignore_index = ignore_index
+        self.register_buffer("weight", weight)
 
-    def forward(self, inputs_in, targets_in):
-
-        # clone tensors to not disturb tensors that were provided
-        inputs = torch.clone(inputs_in)
-        targets = torch.clone(targets_in)
-
-        # do everything using a 1d array
-        if inputs.dim() > 2:
-            # N,C,H,W => N,C,H*W
-            inputs = inputs.view(inputs.size(0), inputs.size(1), -1)
-            # N,C,H*W => N,H*W,C
-            inputs = inputs.transpose(1, 2)
-            # N,H*W,C => N*H*W,C
-            inputs = inputs.contiguous().view(-1, inputs.size(2))    
-
-        targets = targets.view(-1, 1)
-
-        # drop ignored_index
-        mask = targets==self.ignore_index
-        targets = targets[~mask.ravel(),:].ravel()
-        inputs = inputs[~mask.ravel(),:]
-
-        return losses.focal_loss(inputs, targets, self.alpha, self.gamma, self.reduction)
+    def forward(self, logits, target):
+        labeled = target != self.ignore_index
+        if not labeled.any():
+            return logits.sum() * 0
+        if self.weight is not None and not (self.weight[target[labeled]] > 0).any():
+            return logits.sum() * 0
+        return F.cross_entropy(
+            logits, target, weight=self.weight, ignore_index=self.ignore_index
+        )
 
 
-if __name__ == '__main__':
-    import random
-    import kornia
+def count_training_classes(label_paths, num_classes, ignore_index=4):
+    """Count labeled pixels only in training rasters, streaming GeoTIFF blocks."""
+    import rasterio
 
-    n_classes = 5
-    ignore_index = 3
-    # Example of target with class indices
-    loss = nn.CrossEntropyLoss()
-    inputs = torch.randn(3, n_classes, requires_grad=True)
-    targets = torch.empty(3, dtype=torch.long).random_(n_classes)
-    output = loss(inputs, targets)
-    
-    focal_loss = FocalLossMod(alpha=1., gamma=0)
-    output_focal = focal_loss(inputs, targets)
+    counts = np.zeros(num_classes, dtype=np.int64)
+    for path in label_paths:
+        with rasterio.open(path) as raster:
+            for _, window in raster.block_windows(1):
+                block = raster.read(1, window=window, masked=True)
+                pixels = np.asarray(block.data)
+                valid = ~np.ma.getmaskarray(block)
+                valid &= np.isfinite(pixels)
+                valid &= (pixels >= 0) & (pixels < num_classes)
+                valid &= pixels != ignore_index
+                if valid.any():
+                    counts += np.bincount(
+                        pixels[valid].astype(np.int64), minlength=num_classes
+                    )
+    return counts
 
-    print(f'test 1 difference {output_focal-output}')
 
-    x = torch.rand(12800,n_classes)*random.randint(1,10)
-    l = torch.empty(12800, dtype=torch.long).random_(n_classes)
-
-    output0 = FocalLossMod(alpha=0.999999, gamma=0)(x,l)
-    output1 = nn.CrossEntropyLoss()(x,l)
-    
-    print(f'test 2 difference: {output1.item() - output0.item()}')
-
-    output0 = FocalLossMod(alpha=1., gamma=0, ignore_index=ignore_index)(x,l)
-    output1 = nn.CrossEntropyLoss(ignore_index=ignore_index)(x,l)
-    
-    print(f'test 3 difference: {output1.item() - output0.item()}')
-
-    alpha = 0.25
-    gamma = 2
-    output0 = FocalLossMod(alpha=alpha, gamma=gamma, reduction='mean')(x,l)
-    output1 = kornia.losses.focal_loss(x, l, alpha, gamma, reduction='mean')
-    
-    print(f'test 4 difference: {output1.item() - output0.item()}')
-
-    # multi dimensional
-    x = torch.rand(32, n_classes, 224 ,224)*random.randint(1,10)
-    l = torch.empty(32, 224, 224, dtype=torch.long).random_(n_classes)
-
-    output0 = FocalLossMod(alpha=1., gamma=0, ignore_index=ignore_index)(x,l)
-    output1 = nn.CrossEntropyLoss(ignore_index=3)(x,l)
-    
-    print(f'test 5 difference: {output1.item() - output0.item()}')
-    
+def inverse_sqrt_class_weights(counts, max_weight=10.0):
+    """Inverse-sqrt relative frequency, mean 1 over observed classes, capped at 10."""
+    counts = np.asarray(counts, dtype=np.float64)
+    active = counts > 0
+    if not active.any():
+        raise ValueError("No labeled training pixels found for class weighting")
+    frequencies = counts[active] / counts[active].sum()
+    weights = np.zeros_like(counts)
+    weights[active] = 1 / np.sqrt(frequencies)
+    weights[active] /= weights[active].mean()
+    weights[active] = np.minimum(weights[active], max_weight)
+    return torch.as_tensor(weights, dtype=torch.float32)

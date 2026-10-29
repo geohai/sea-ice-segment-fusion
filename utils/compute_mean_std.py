@@ -1,71 +1,71 @@
-"""computes mean and std of rasters 
-"""
+"""Calculate per-channel raster means and standard deviations."""
+
+import argparse
+from pathlib import Path
 
 import numpy as np
-import rioxarray
-from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 
-def compute_mean_std(fnames, n_channels, show_histogram=True, bins=100):
-    """Computes mean and standard deviation of a collection of raster files
+def compute_mean_std(fnames, n_channels, show_histogram=False, bins=100):
+    """Average per-band moments computed separately for each raster."""
+    import rioxarray
+    from matplotlib import pyplot as plt
 
-    Args:
-        fnames (iterable): iterable containing the complete names of the raster files
-        n_channels (int): number of bands
-        show_histogram (boolean): plots the histogram for all bands if True
-        bins (int): number of bins for histogram
-    """
-    dset_mean = np.zeros(n_channels)
-    dset_std = np.zeros(n_channels)
-    bands = [[] for _ in range(n_channels)]
-
-    print('==> Computing mean and std...')
-    for fname in tqdm(fnames):
+    rasters_mean = []
+    rasters_std = []
+    all_bands = [[] for _ in range(n_channels)] if show_histogram else None
+    for fname in fnames:
         raster = rioxarray.open_rasterio(fname, masked=True)
-        
-        for idx, band in enumerate(raster):
-            dset_mean[idx] += band.mean().item()
-            dset_std[idx] += band.std().item()
-            
-            bands[idx].append(band)
-
-    dset_mean = dset_mean/(len(fnames))
-    dset_std = dset_std/(len(fnames))
-
-    print(f'\nmean: {dset_mean}')
-    print(f'std: {dset_std}')
-
+        try:
+            if raster.shape[0] != n_channels:
+                raise ValueError(
+                    f"{fname}: expected {n_channels} channels; found {raster.shape[0]}"
+                )
+            data = raster.values
+            rasters_mean.append(np.nanmean(data, axis=(1, 2)))
+            rasters_std.append(np.nanstd(data, axis=(1, 2)))
+            if show_histogram:
+                for idx in range(n_channels):
+                    all_bands[idx].append(data[idx].ravel())
+        finally:
+            raster.close()
+    mean = np.mean(rasters_mean, axis=0)
+    std = np.mean(rasters_std, axis=0)
+    print("mean =", ", ".join(str(v) for v in mean))
+    print("std =", ", ".join(str(v) for v in std))
     if show_histogram:
-        print('==> Computing histograms...')
-        for idx, band_list in enumerate(tqdm(bands)):
-            x = np.concatenate([darray.to_numpy().ravel() for darray in band_list])
-            x = x[~np.isnan(x)]
-
+        for i, values in enumerate(all_bands):
             fig, ax = plt.subplots()
-            ax.hist(x, bins=bins)
-            ax.set_title(f'Histogram for band {idx+1}')
+            v = np.concatenate(values)
+            ax.hist(v[np.isfinite(v)], bins=bins)
+            ax.set_title(f"Band {i + 1}")
+        plt.show()
+    return mean, std
 
-            fig.show()
 
-    return dset_mean, dset_std
-
-
-if __name__ == '__main__':
-    import os
-
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--csv", type=Path, required=True)
+    p.add_argument("--dataset-root", type=Path, required=True)
+    p.add_argument("--column", default="input")
+    p.add_argument("--channels", type=int, required=True)
+    p.add_argument("--split", default="train")
+    p.add_argument("--histogram", action="store_true")
+    args = p.parse_args()
     import pandas as pd
-    root_dir = os.path.normpath("E:/rafael/data/Extreme_Earth/results/v1/poly_type_wland")
-    fname_in = os.path.join(root_dir, "EE_IO-poly_type-melt.csv")
-    df = pd.read_csv(fname_in)
 
-    df = df.loc[df['dset'] == 'train'].copy()
+    df = pd.read_csv(args.csv)
+    if "dset" in df:
+        df = df[df.dset == args.split]
+    if df.empty:
+        raise ValueError("No data to calculate statistics")
+    root = args.dataset_root
+    compute_mean_std(
+        [p if Path(p).is_absolute() else root / p for p in df[args.column]],
+        args.channels,
+        args.histogram,
+    )
 
-    fnames = df['input'].to_list()
-    n_channels = 3
-    
-    compute_mean_std(fnames,
-                     n_channels,
-                     )
 
-    input("Press Enter to finish...")    
+if __name__ == "__main__":
+    main()

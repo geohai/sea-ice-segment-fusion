@@ -1,230 +1,196 @@
+"""Single entry point for SA single-band, early, late and gated experiments."""
+
 import argparse
-import configparser
-import os
-import sys
+import json
 
-import numpy as np
-import pandas as pd
-import pytorch_lightning as pl
-import torch
-from matplotlib import pyplot as plt
-from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from torch import nn
-from torchvision.transforms import Normalize
-
-from datasets import GeoDataModule
-from models import DeepLabLikeMultiStreamDict
+from runtime import (
+    Settings,
+    cli,
+    device_name,
+    load_config,
+    rebase_csv_paths,
+    route_late_inputs,
+    set_seed,
+)
 
 
-def main(config):
+def train(args):
+    cfg = load_config(args)
+    settings = Settings(args, cfg)
+    settings.assert_environment()
 
-    dir_out = os.path.normpath(config['io']['dir_out'])
-    fname_csv = os.path.normpath(config['io']['fname_csv'])
+    import platform
 
-    num_streams = int(config['model']['num_streams'])
-    num_classes = int(config['model']['num_classes'])
-    pretrained = config['model']['pretrained'] == 'True'
-    
-    loss = config['loss']['loss']
-    if loss == 'focal':
-        gamma = float(config['loss']['gamma'])
-        alpha = float(config['loss']['alpha'])
-    else:
-        gamma = None
-        alpha = None
+    import numpy as np
+    import pandas as pd
+    import pytorch_lightning as pl
+    import torch
+    import torchvision
+    from datasets import GeoDataModule
+    from losses import count_training_classes, inverse_sqrt_class_weights
+    from models import DeepLabLikeMultiStreamDict
+    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+    from pytorch_lightning.loggers import CSVLogger
 
-    n_samples_per_input = int(config['datamodule']['n_samples_per_input'])
-    crop_len = float(config['datamodule']['crop_len'])
-    seed = int(config['datamodule']['seed'])
-    if 'class_weights' in config['datamodule'].keys():
-        class_weights = [float(val) for val in config['datamodule']['class_weights'].split(',')]
-        class_weights = torch.Tensor(class_weights)
-    else:
-        class_weights = None
-
-    mean = [float(val) for val in config['datamodule']['mean'].split(',')]
-    std = [float(val) for val in config['datamodule']['std'].split(',')]
-
-    min_epochs = int(config['train']['min_epochs'])
-    max_epochs = int(config['train']['max_epochs'])
-    patience = int(config['train']['patience'])
-    reduce_lr_patience = int(config['train']['reduce_lr_patience'])
-    batch_size = int(config['train']['batch_size'])
-    lr = float(config['train']['lr'])
-    reload_every_n_epochs = int(config['train']['reload_every_n_epochs'])
-
-    fine_tune = config['train']['fine_tune'] == 'True'
-    ignore_index = int(config['train']['ignore_index'])
-
-    transforms = None
-    norms = {}
-    norms['input'] = Normalize(mean, std)
-
-    pl.seed_everything(seed, workers=True)
-
-    #########################################################
-    df = pd.read_csv(fname_csv)
-
-    # Windows need different distributed backend
-    # this will be depecrated in pytorch lightning in version 1.8
-    # and a full Strategy object will have to be set up
-    if os.name == 'nt':
-        os.environ["PL_TORCH_DISTRIBUTED_BACKEND"] = "gloo"
-
-    ###########################################################
-    # Set the pl.DataModule to be used in experiments
-    ###########################################################
-
-    # create datamodule:
-    dm = GeoDataModule(df=df,
-                    n_samples_per_input=n_samples_per_input,
-                    crop_len=crop_len,
-                    transforms=transforms,
-                    norms=norms,
-                    ignore_index=ignore_index,
-                    seed=seed, 
-                    batch_size=batch_size, 
-                    )
-
-    ###########################################################
-    # create models
-    ###########################################################
-
-    model = DeepLabLikeMultiStreamDict(num_streams=num_streams, 
-                                       num_classes=num_classes,
-                                       pretrained=pretrained,
-                                       loss=loss,
-                                       gamma=gamma,
-                                       alpha=alpha,
-                                       class_weights = class_weights,
-                                       lr=lr, 
-                                       reduce_lr_patience=reduce_lr_patience, 
-                                       ignore_index=ignore_index)
-
-    if fine_tune:
-        if os.path.isfile(os.path.normpath(config['io']['fname_model'])):
-            model.load_from_checkpoint(os.path.normpath(config['io']['fname_model']))
-        else:
-            print(f"{os.path.normpath(config['io']['fname_model'])} is not a valid model")
-            return
-
-    ###########################################################
-    # run experiment
-    ###########################################################
-
-    # callbacks:
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        min_delta=1e-4,
-        patience=patience,
-        verbose=False,
-        mode='min'
+    device = device_name(
+        "cpu" if settings.mode == "dev" and args.device == "auto" else args.device
     )
+    set_seed(settings.seed)
+    dev = settings.mode == "dev"
+    if dev:
+        print(
+            "Development mode: first fold by default, one epoch, one sample per scene, no ImageNet download."
+        )
+    for fold in settings.folds:
+        # Keep one continuous random-number stream across the configured folds.
+        print(
+            f"===== {settings.experiment} / {fold} / {settings.mode} / seed {settings.seed} ====="
+        )
+        output = settings.output(fold)
+        output.mkdir(parents=True, exist_ok=True)
+        df = pd.read_csv(settings.csv(fold))
+        if "dset" not in df.columns:
+            raise ValueError("CSV needs dset column with train and val values")
+        df = rebase_csv_paths(df, settings.dataset_root, settings.default_dataset_root)
+        if settings.experiment.startswith("single_"):
+            if "input" not in df.columns and "input-1" in df.columns:
+                df = df.rename(columns={"input-1": "input"})
+            df = df[["dset", "input", "label"]]
+        elif settings.model_experiment == "late":
+            df = route_late_inputs(df, settings.input_bands)
+        else:
+            df = df[["dset", "input-1", "input-2", "label"]]
+        mean, std = settings.stats(fold)
+        if settings.experiment.startswith("single_"):
+            norms = {"input": (mean, std)}
+        else:
+            norms = {"input-1": (mean[:2], std[:2]), "input-2": (mean[2:], std[2:])}
+        batch_size = 1 if dev else cfg.getint("train", "batch_size")
+        crop_len = cfg.getfloat("datamodule", "crop_len")
+        samples = 1 if dev else cfg.getint("datamodule", "n_samples_per_input")
+        max_epochs = 1 if dev else cfg.getint("train", "max_epochs")
+        dm = GeoDataModule(
+            df,
+            samples,
+            crop_len,
+            norms,
+            cfg.getint("train", "ignore_index"),
+            settings.seed,
+            batch_size,
+        )
+        counts, weights = None, None
+        if settings.class_weighted:
+            counts = count_training_classes(
+                df.loc[df.dset == "train", "label"],
+                cfg.getint("model", "num_classes"),
+                cfg.getint("train", "ignore_index"),
+            )
+            weights = inverse_sqrt_class_weights(counts)
+            print(
+                f"Training class counts: {counts.tolist()} | CE weights: {weights.tolist()}"
+            )
+        model = DeepLabLikeMultiStreamDict(
+            experiment=settings.model_experiment,
+            num_classes=cfg.getint("model", "num_classes"),
+            pretrained=cfg.getboolean("model", "pretrained") and not dev,
+            class_weights=weights,
+            lr=cfg.getfloat("train", "lr"),
+            reduce_lr_patience=cfg.getint("train", "reduce_lr_patience"),
+            ignore_index=cfg.getint("train", "ignore_index"),
+            gated_switch_epoch=cfg.getint("model", "gated_switch_epoch", fallback=15),
+            gated_target_band=settings.gated_target_band,
+            ablation=settings.ablation,
+        )
+        checkpoint = ModelCheckpoint(
+            dirpath=output,
+            filename="best_weights",
+            save_top_k=1,
+            monitor="val_loss",
+            mode="min",
+        )
+        stopper = EarlyStopping(
+            monitor="val_loss",
+            patience=cfg.getint("train", "patience"),
+            min_delta=1e-4,
+            mode="min",
+        )
+        trainer = pl.Trainer(
+            accelerator="gpu" if device == "cuda" else device,
+            devices=1,
+            max_epochs=max_epochs,
+            min_epochs=1 if dev else cfg.getint("train", "min_epochs"),
+            gradient_clip_val=1.0,
+            log_every_n_steps=1,
+            default_root_dir=str(output),
+            callbacks=[checkpoint, stopper],
+            logger=CSVLogger(str(output), name="training"),
+            deterministic=True,
+            reload_dataloaders_every_n_epochs=cfg.getint(
+                "train", "reload_every_n_epochs"
+            ),
+            enable_progress_bar=True,
+        )
+        trainer.fit(model, datamodule=dm)
+        if checkpoint.best_model_path:
+            saved = torch.load(
+                checkpoint.best_model_path, map_location="cpu", weights_only=False
+            )
+            model.load_state_dict(saved["state_dict"])
+        torch.save(
+            {
+                "state_dict": model.cpu().state_dict(),
+                "experiment": settings.experiment,
+                "input_bands": list(settings.input_bands),
+                "seed": settings.seed,
+                "fold": fold,
+                "gated_target_band": settings.gated_target_band,
+                "ablation": settings.ablation,
+                "class_weighted": settings.class_weighted,
+                "class_weights": weights.tolist() if weights is not None else None,
+            },
+            output / "model.pth",
+        )
+        # Store a compact run manifest for provenance and eval reproducibility.
+        manifest = {
+            "experiment": settings.experiment,
+            "input_bands": list(settings.input_bands),
+            "fold": fold,
+            "seed": settings.seed,
+            "mode": settings.mode,
+            "device": device,
+            "gated_target_band": settings.gated_target_band,
+            "ablation": settings.ablation,
+            "class_weighted": settings.class_weighted,
+            "class_counts": counts.tolist() if counts is not None else None,
+            "class_weights": weights.tolist() if weights is not None else None,
+            "csv": str(settings.csv(fold)),
+            "epochs": max_epochs,
+            "batch_size": batch_size,
+            "crop_len": crop_len,
+            "samples_per_input": samples,
+            "normalization": {"mean": mean, "std": std},
+            "versions": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "pytorch": torch.__version__,
+                "torchvision": torchvision.__version__,
+                "lightning": pl.__version__,
+                "numpy": np.__version__,
+                "cuda": torch.version.cuda,
+                "cudnn": torch.backends.cudnn.version(),
+            },
+            "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        }
+        (output / "run.json").write_text(json.dumps(manifest, indent=2))
+        with (output / "train.cfg").open("w") as f:
+            cfg.write(f)
+        print(f"Saved {output / 'model.pth'}")
 
-    best_weights = ModelCheckpoint(dirpath=dir_out,
-                                    filename=f'best_weights',
-                                    save_top_k=1,
-                                    verbose=False,
-                                    monitor='val_loss',
-                                    mode='min'
-                                    )
-    
 
-    # loggers:
-    tb_logger = pl_loggers.TensorBoardLogger(save_dir=dir_out)
-    cvs_logger = pl_loggers.CSVLogger(save_dir=dir_out)
+def main():
+    parser = cli(argparse.ArgumentParser(description=__doc__))
+    train(parser.parse_args())
 
-    # make sure there are no old files there
-    if os.path.isfile(os.path.join(dir_out, 'best_weights.ckpt')):
-        os.remove(os.path.join(dir_out, 'best_weights.ckpt'))
 
-    trainer = pl.Trainer(gpus=1,
-                        default_root_dir=dir_out,
-                        gradient_clip_val=1.0,   # clip large gradients
-                        log_every_n_steps=1,
-                        min_epochs=min_epochs,
-                        callbacks=[early_stopping, best_weights],
-                        logger=[tb_logger, cvs_logger],
-                        strategy="ddp",
-                        accelerator="gpu",
-                        max_epochs=max_epochs,
-                        reload_dataloaders_every_n_epochs=reload_every_n_epochs,
-                        )
-    
-    trainer.fit(model, dm)
-
-    # TODO: maybe remove the quick check
-    # pytorch lightning "does not consider" script continues after .fit, 
-    # the following code will likely be ran once for each gpu available
-    # https://stackoverflow.com/questions/66261729/pytorch-lightning-duplicates-main-script-in-ddp-mode
-    if model.global_rank != 0:
-        sys.exit(0)
-
-    # make sure model has the best weights and not the ones for the last epoch
-    if os.path.isfile(os.path.join(dir_out, 'best_weights.ckpt')):
-        model.load_from_checkpoint(os.path.join(dir_out, 'best_weights.ckpt'))
-
-    # save for use in production environment
-    script = model.to_torchscript()
-    torch.jit.save(script, os.path.join(dir_out, "model.pt"))
-    
-    # run some examples with the trained model
-    model.eval()
-
-    for dataload, dset in zip([dm.train_dataloader(), dm.val_dataloader()], ['train', 'validation']):
-        fig_counter = 0
-
-        for sample in dataload:
-            imgs_b = [sample['input']]
-            tar_b = sample['label']
-            
-            res_b = model(imgs_b)
-            
-            for img_center, res, tar in zip(imgs_b[0], res_b, tar_b):
-                fig, ax = plt.subplots(ncols=3, figsize=(12,4))
-                
-                ax[0].imshow(np.swapaxes(img_center.detach().numpy(),0,-1)[:,:,0])
-                ax[1].imshow(np.swapaxes(res.detach().numpy().argmax(0),0,-1), vmin=0, vmax=num_classes-1)
-                ax[-1].imshow(np.swapaxes(tar.numpy(),0,-1), vmin=0, vmax=num_classes-1)
-
-                ax[0].set_title('input')
-                ax[1].set_title('prediction')
-                ax[2].set_title('label')
-
-                fig.suptitle(dset)
-                fig.tight_layout()
-                
-                plt.savefig(os.path.join(dir_out, f'{dset}-{fig_counter}'))
-                fig_counter += 1
-
-                plt.close('all')
-
-                if dset == 'train':
-                    break
-            if fig_counter >= 32:
-                break
-    
-    # save configuration file:
-    with open(os.path.join(dir_out, 'train.cfg'), 'w') as out_file:
-        config.write(out_file)
-    
-    return model
-
-if __name__ == '__main__':
-    
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('-c', '--config_file', default='config_main.ini')
-
-    args = parser.parse_args()
-
-    if os.path.isfile(args.config_file):
-        config = configparser.ConfigParser()
-        config.read(args.config_file)
-
-        main(config)
-    
-    else:
-        print('Please provide a valid configuration file.')
-
+if __name__ == "__main__":
+    main()
